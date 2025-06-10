@@ -1,0 +1,384 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Listnr - Voice Diary</title>
+    <link rel="icon" href="https://cdn.simulationtheory.ai/gasset/?asset=img&prompt=microphone+icon&w=32&h=32" type="image/png">
+    
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+    
+    <style>
+        body { font-size: 90%; }
+        @keyframes pulse { 50% { transform: scale(1.05); } }
+        .recording-pulse { animation: pulse 1.2s infinite ease-in-out; }
+        .hidden { display: none !important; }
+    </style>
+</head>
+<body class="bg-gradient-to-br from-[#F7CAC9] to-[#E6C7C7] min-h-screen">
+    <div class="container mx-auto px-4 py-8 max-w-4xl">
+        <!-- Error Display -->
+        <div id="errorMessage" class="hidden bg-red-100 border border-red-400 text-red-700 px-4 py-3 rounded mb-4 fixed top-5 right-5 z-50 shadow-lg">
+            <span id="errorText"></span>
+        </div>
+
+        <!-- Unified Header and Recording Section -->
+        <div class="bg-white rounded-2xl shadow-lg p-4 sm:p-6 mb-8 text-center">
+            <!-- Top Control Bar -->
+            <div class="flex flex-wrap items-center justify-between gap-x-4 gap-y-2 mb-6">
+                <h1 class="text-3xl font-bold text-gray-800 mr-auto">Listnr</h1>
+                <div class="flex flex-wrap items-center gap-2">
+                    <select id="audioInputSelect" title="Select Audio Input" class="px-3 py-1.5 border border-gray-300 rounded-lg bg-white text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"></select>
+                    <select id="languageSelect" title="Select Language" class="px-3 py-1.5 border border-gray-300 rounded-lg bg-white text-sm focus:outline-none focus:ring-2 focus:ring-blue-500">
+                        <option value="">Auto Detect</option>
+                        <option value="en-US">English</option>
+                        <option value="fa-IR">فارسی (Persian)</option>
+                        <option value="es-ES">Español</option>
+                        <option value="fr-FR">Français</option>
+                        <option value="de-DE">Deutsch</option>
+                        <option value="it-IT">Italiano</option>
+                        <option value="pt-BR">Português</option>
+                        <option value="ru-RU">Русский</option>
+                        <option value="ja-JP">日本語</option>
+                        <option value="ko-KR">한국어</option>
+                        <option value="zh-CN">中文</option>
+                        <option value="ar-SA">العربية</option>
+                    </select>
+                    <button id="exportBtn" title="Export as CSV" class="px-3 py-1.5 bg-green-500 text-white rounded-lg hover:bg-green-600 text-sm">CSV</button>
+                    <button id="downloadAllBtn" title="Download all as ZIP" class="px-3 py-1.5 bg-blue-500 text-white rounded-lg hover:bg-blue-600 text-sm">ZIP</button>
+                </div>
+            </div>
+            
+            <!-- Recording Area -->
+            <button id="recordBtn" class="w-16 h-16 bg-green-500 hover:bg-green-600 text-white rounded-full flex items-center justify-center transition-all duration-300 shadow-lg mx-auto">
+                <svg id="micIcon" class="w-8 h-8" fill="currentColor" viewBox="0 0 20 20"><path d="M7 4a3 3 0 016 0v4a3 3 0 11-6 0V4zm4 10.93A7 7 0 0017 8a1 1 0 10-2 0A5 5 0 015 8a1 1 0 00-2 0 7 7 0 006 6.93V17H6a1 1 0 100 2h8a1 1 0 100-2h-3v-2.07z"></path></svg>
+            </button>
+            
+            <div id="statusText" class="text-gray-600 mt-4 h-6 text-lg">Click to start recording</div>
+        </div>
+
+        <!-- Live Transcript -->
+        <div id="liveTranscriptSection" class="hidden bg-blue-50 rounded-2xl shadow-lg p-6 mb-8">
+            <h3 class="text-xl font-bold text-blue-800 mb-4">Live Transcript</h3>
+            <div id="liveTranscript" class="text-gray-700 bg-white p-4 rounded-lg min-h-20 border-2 border-blue-200" style="font-family: Georgia, serif; line-height: 1.6;"></div>
+        </div>
+
+        <!-- Recordings List -->
+        <div class="bg-white rounded-2xl shadow-lg p-6">
+            <div class="flex items-center justify-between mb-6">
+                 <h2 class="text-2xl font-bold text-gray-800">Recent Recordings</h2>
+                <div class="flex items-center space-x-2">
+                    <span id="recordingCount" class="px-3 py-1 bg-blue-100 text-blue-800 rounded-full text-sm font-medium">0 recordings</span>
+                    <button id="clearAllBtn" class="px-4 py-2 bg-red-500 text-white rounded-lg hover:bg-red-600">Clear All</button>
+                </div>
+            </div>
+            <div id="recordingsList" class="space-y-4"></div>
+        </div>
+    </div>
+
+    <script>
+        class VoiceDiary {
+            constructor() {
+                this.isRecording = false;
+                this.mediaRecorder = null;
+                this.audioChunks = [];
+                this.recognition = null;
+                this.currentTranscript = '';
+                this.mediaRecorderMimeType = ''; // This will be set dynamically
+                this.recordings = JSON.parse(localStorage.getItem('voiceDiaryRecordings') || '[]');
+                
+                this.initializeElements();
+                this.checkBrowserSupport();
+                this.populateAudioInputs();
+                this.initializeSpeechRecognition();
+                this.setupEventListeners();
+                this.displayRecordings();
+                this.updateRecordingCount();
+            }
+
+            initializeElements() {
+                document.querySelectorAll('[id]').forEach(el => this[el.id] = el);
+            }
+
+            checkBrowserSupport() {
+                const errors = [];
+                if (!navigator.mediaDevices?.getUserMedia) errors.push('Microphone access not supported');
+                if (!window.MediaRecorder) errors.push('Audio recording not supported');
+                if (!('webkitSpeechRecognition' in window || 'SpeechRecognition' in window)) errors.push('Speech recognition not supported');
+                if (errors.length > 0) this.showError('Browser compatibility issues: ' + errors.join(', '));
+            }
+
+            async populateAudioInputs() {
+                try {
+                    const devices = await navigator.mediaDevices.enumerateDevices();
+                    const audioInputs = devices.filter(device => device.kind === 'audioinput');
+                    const currentVal = this.audioInputSelect.value;
+                    this.audioInputSelect.innerHTML = '';
+                    if (audioInputs.length > 0) {
+                         this.audioInputSelect.classList.remove('hidden');
+                        audioInputs.forEach(device => {
+                            const option = document.createElement('option');
+                            option.value = device.deviceId;
+                            option.text = device.label || `Microphone ${this.audioInputSelect.length + 1}`;
+                            this.audioInputSelect.appendChild(option);
+                        });
+                        if (Array.from(this.audioInputSelect.options).some(o => o.value === currentVal)) {
+                            this.audioInputSelect.value = currentVal;
+                        }
+                    } else {
+                        this.audioInputSelect.classList.add('hidden');
+                    }
+                } catch (err) {
+                    console.error("Error enumerating audio devices:", err);
+                    this.audioInputSelect.classList.add('hidden');
+                }
+            }
+            
+            initializeSpeechRecognition() {
+                if ('webkitSpeechRecognition' in window || 'SpeechRecognition' in window) {
+                    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+                    this.recognition = new SpeechRecognition();
+                    this.recognition.continuous = true;
+                    this.recognition.interimResults = true;
+                    
+                    this.recognition.onresult = (event) => {
+                        let finalTranscript = '';
+                        let interimTranscript = '';
+                        for (let i = event.resultIndex; i < event.results.length; i++) {
+                            const transcript = event.results[i][0].transcript;
+                            if (event.results[i].isFinal) {
+                                finalTranscript += transcript + ' ';
+                            } else {
+                                interimTranscript += transcript;
+                            }
+                        }
+                        this.currentTranscript += finalTranscript;
+                        this.liveTranscript.innerHTML = this.currentTranscript + '<i class="text-gray-400">' + interimTranscript + '</i>';
+                    };
+                    this.recognition.onerror = (event) => {
+                        if (event.error !== 'no-speech' && event.error !== 'aborted') {
+                            this.showError('Speech recognition error: ' + event.error);
+                        }
+                    };
+                }
+            }
+
+            setupEventListeners() {
+                this.recordBtn.addEventListener('click', () => this.isRecording ? this.stopRecording() : this.startRecording());
+                this.languageSelect.addEventListener('change', () => { if (this.recognition) this.recognition.lang = this.languageSelect.value; });
+                this.clearAllBtn.addEventListener('click', () => { if (confirm('Are you sure you want to delete all recordings?')) this.clearAllRecordings(); });
+                this.exportBtn.addEventListener('click', () => this.exportToCSV());
+                this.downloadAllBtn.addEventListener('click', () => this.downloadAllAsZip());
+                navigator.mediaDevices.ondevicechange = () => this.populateAudioInputs();
+            }
+
+            async startRecording() {
+                try {
+                    const constraints = { audio: { deviceId: this.audioInputSelect.value ? { exact: this.audioInputSelect.value } : undefined, echoCancellation: true, noiseSuppression: true }};
+                    const stream = await navigator.mediaDevices.getUserMedia(constraints);
+                    
+                    this.populateAudioInputs();
+
+                    const MimeTypes = ['audio/webm;codecs=opus', 'audio/webm', 'audio/ogg;codecs=opus', 'audio/mp4'];
+                    this.mediaRecorderMimeType = MimeTypes.find(type => MediaRecorder.isTypeSupported(type));
+
+                    if (!this.mediaRecorderMimeType) {
+                        this.showError('No supported audio format found for recording.');
+                        return;
+                    }
+                    
+                    this.mediaRecorder = new MediaRecorder(stream, { mimeType: this.mediaRecorderMimeType });
+                    this.audioChunks = [];
+                    this.currentTranscript = '';
+
+                    this.mediaRecorder.ondataavailable = (event) => { if (event.data.size > 0) this.audioChunks.push(event.data); };
+                    this.mediaRecorder.onstop = () => { stream.getTracks().forEach(track => track.stop()); this.processRecording(); };
+                    
+                    if (this.recognition) {
+                        this.recognition.lang = this.languageSelect.value;
+                        this.recognition.start();
+                    }
+                    this.mediaRecorder.start();
+                    this.updateRecordingUI(true);
+                } catch (error) {
+                    console.error('Recording Error:', error);
+                    if (error.name === 'NotAllowedError' || error.name === 'PermissionDeniedError') {
+                        this.showError('Microphone permission was denied. Please allow it in your browser settings.');
+                    } else {
+                         this.showError(`Mic error: ${error.message}`);
+                    }
+                }
+            }
+
+            stopRecording() {
+                if (this.mediaRecorder?.state === 'recording') {
+                    this.mediaRecorder.stop();
+                    if (this.recognition) this.recognition.stop();
+                    this.updateRecordingUI(false);
+                }
+            }
+
+            updateRecordingUI(isRec) {
+                this.isRecording = isRec;
+                this.recordBtn.classList.toggle('bg-red-500', isRec);
+                this.recordBtn.classList.toggle('hover:bg-red-600', isRec);
+                this.recordBtn.classList.toggle('recording-pulse', isRec);
+                this.recordBtn.classList.toggle('bg-green-500', !isRec);
+                this.recordBtn.classList.toggle('hover:bg-green-600', !isRec);
+                this.micIcon.innerHTML = isRec ? `<path d="M10 18a8 8 0 100-16 8 8 0 000 16zM8 7a2 2 0 114 0v4a2 2 0 11-4 0V7z"></path>` : `<path d="M7 4a3 3 0 016 0v4a3 3 0 11-6 0V4zm4 10.93A7 7 0 0017 8a1 1 0 10-2 0A5 5 0 015 8a1 1 0 00-2 0 7 7 0 006 6.93V17H6a1 1 0 100 2h8a1 1 0 100-2h-3v-2.07z"></path>`;
+                this.statusText.innerHTML = isRec ? `<div class="flex items-center justify-center space-x-2 text-green-600"><div class="w-2 h-2 bg-green-500 rounded-full animate-ping"></div><span>Recording...</span></div>` : 'Click to start recording';
+                this.liveTranscriptSection.classList.toggle('hidden', !isRec);
+                this.liveTranscript.innerHTML = '';
+            }
+
+            blobToBase64(blob) { return new Promise(r => { const reader = new FileReader(); reader.onloadend = () => r(reader.result); reader.readAsDataURL(blob); }); }
+
+            async processRecording() {
+                if (this.audioChunks.length === 0) {
+                     // If there's a transcript but no audio, still save the note.
+                    if(this.currentTranscript.trim().length === 0) return;
+                }
+                
+                const audioBlob = this.audioChunks.length > 0 ? new Blob(this.audioChunks, { type: this.mediaRecorderMimeType }) : null;
+
+                const recording = {
+                    id: Date.now().toString(),
+                    title: this.currentTranscript.trim().split(' ').slice(0, 6).join(' ') || `Recording ${new Date().toLocaleString()}`,
+                    audioData: audioBlob ? await this.blobToBase64(audioBlob) : null,
+                    transcript: this.currentTranscript.trim(),
+                    timestamp: new Date().toISOString(),
+                    location: await this.getLocation(),
+                    language: this.languageSelect.value,
+                    duration: 0,
+                    mimeType: this.mediaRecorderMimeType
+                };
+
+                if (audioBlob) {
+                    const audio = new Audio(recording.audioData);
+                    audio.onloadedmetadata = () => {
+                        recording.duration = audio.duration;
+                        this.saveRecording(recording);
+                    };
+                } else {
+                    this.saveRecording(recording);
+                }
+            }
+
+            saveRecording(recording) {
+                this.recordings.unshift(recording);
+                this.persistAndRedraw();
+            }
+
+            async getLocation() {
+                return new Promise(resolve => {
+                    if (!navigator.geolocation) return resolve(null);
+                    navigator.geolocation.getCurrentPosition(
+                        async pos => {
+                            const { latitude, longitude } = pos.coords;
+                            try {
+                                const res = await fetch(`https://nominatim.openstreetmap.org/reverse?format=jsonv2&lat=${latitude}&lon=${longitude}`);
+                                const data = await res.json();
+                                const name = data.address.city || data.address.town || data.address.village || data.address.suburb || 'Unknown Area';
+                                resolve({ name, lat: latitude, lon: longitude });
+                            } catch { resolve({ name: 'Unknown Area', lat: latitude, lon: longitude }); }
+                        },
+                        () => resolve(null), { timeout: 7000, enableHighAccuracy: false }
+                    );
+                });
+            }
+
+            displayRecordings() {
+                this.recordingsList.innerHTML = this.recordings.length === 0
+                    ? `<div class="text-center text-gray-500 py-12"><p class="text-lg">No recordings yet</p></div>`
+                    : this.recordings.map(r => `
+                        <div class="border border-gray-200 rounded-xl p-4 bg-gray-50">
+                            <div class="flex items-start justify-between mb-3">
+                                <div class="flex-1 mr-2">
+                                    <h3 class="text-lg font-semibold text-gray-800">${r.title || 'Untitled Recording'}</h3>
+                                    <div class="flex flex-wrap items-center gap-x-3 text-sm text-gray-500 mt-1">
+                                        <span>${new Date(r.timestamp).toLocaleString()}</span>
+                                        ${r.duration > 0 ? `<span>• ${Math.round(r.duration)}s</span>` : ''}
+                                        ${r.location ? `<span>• <a href="https://www.google.com/maps?q=${r.location.lat},${r.location.lon}" target="_blank" class="text-blue-600 hover:underline">${r.location.name}</a></span>` : ''}
+                                        <span>• ${this.getLanguageName(r.language)}</span>
+                                    </div>
+                                </div>
+                                <button onclick="voiceDiary.deleteRecording('${r.id}')" title="Delete" class="text-red-500 hover:text-red-700 p-2">
+                                    <svg class="w-5 h-5" fill="currentColor" viewBox="0 0 20 20"><path fill-rule="evenodd" d="M9 2a1 1 0 00-.894.553L7.382 4H4a1 1 0 000 2v10a2 2 0 002 2h8a2 2 0 002-2V6a1 1 0 100-2h-3.382l-.724-1.447A1 1 0 0011 2H9zM7 8a1 1 0 012 0v6a1 1 0 11-2 0V8zm4 0a1 1 0 012 0v6a1 1 0 11-2 0V8z" clip-rule="evenodd"></path></svg>
+                                </button>
+                            </div>
+                            ${r.audioData ? `<audio controls class="w-full" src="${r.audioData}" type="${r.mimeType}"></audio>` : ''}
+                            ${r.transcript ? `<div class="bg-white p-3 mt-3 rounded-lg border-l-4 border-blue-400"><p class="text-gray-700">"${r.transcript}"</p></div>` : ''}
+                        </div>`).join('');
+            }
+
+            getLanguageName(code) {
+                if (!code) return 'Auto Detected';
+                try { return new Intl.DisplayNames(['en'], { type: 'language' }).of(code.split('-')[0]) || code; } catch { return code; }
+            }
+
+            deleteRecording(id) {
+                if (confirm('Are you sure you want to delete this recording?')) {
+                    this.recordings = this.recordings.filter(r => r.id !== id);
+                    this.persistAndRedraw();
+                }
+            }
+
+            clearAllRecordings() {
+                this.recordings = [];
+                this.persistAndRedraw();
+            }
+            
+            persistAndRedraw() {
+                localStorage.setItem('voiceDiaryRecordings', JSON.stringify(this.recordings));
+                this.displayRecordings();
+                this.updateRecordingCount();
+            }
+
+            updateRecordingCount() {
+                const count = this.recordings.length;
+                this.recordingCount.textContent = `${count} recording${count !== 1 ? 's' : ''}`;
+            }
+
+            async downloadAllAsZip() {
+                if (this.recordings.length === 0) return alert('No recordings to download.');
+                const zip = new JSZip();
+                this.recordings.forEach(r => {
+                    if(r.audioData) {
+                        const extension = r.mimeType ? r.mimeType.split('/')[1].split(';')[0] : 'webm';
+                        zip.file(`rec_${r.id}.${extension}`, r.audioData.split(',')[1], {base64: true});
+                    }
+                });
+                const content = await zip.generateAsync({type:"blob"});
+                const a = document.createElement('a');
+                a.href = URL.createObjectURL(content); a.download = 'listnr_archive.zip';
+                a.click(); URL.revokeObjectURL(a.href);
+            }
+
+            exportToCSV() {
+                if (this.recordings.length === 0) return alert('No recordings to export');
+                const data = this.recordings.map(r => ({ title: r.title, timestamp: r.timestamp, transcript: r.transcript, duration_s: isFinite(r.duration) ? Math.round(r.duration) : '', location: r.location?.name, language: this.getLanguageName(r.language) }));
+                const headers = Object.keys(data[0]);
+                const csv = [ headers.join(','), ...data.map(row => headers.map(h => `"${(row[h] || '').toString().replace(/"/g, '""')}"`).join(',')) ].join('\n');
+                const a = document.createElement('a');
+                a.href = URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8;' })); a.download = 'listnr_recordings.csv';
+                a.click(); URL.revokeObjectURL(a.href);
+            }
+
+            showError(message, type = 'error', duration = 5000) {
+                this.errorText.textContent = message;
+                const classMap = { error: ['bg-red-100', 'border-red-400', 'text-red-700'], info: ['bg-blue-100', 'border-blue-400', 'text-blue-700'] };
+                this.errorMessage.classList.remove(...Object.values(classMap).flat());
+                this.errorMessage.classList.add(...(classMap[type] || classMap.error));
+                this.errorMessage.classList.remove('hidden');
+                setTimeout(() => this.errorMessage.classList.add('hidden'), duration);
+            }
+        }
+        
+        let voiceDiary;
+        document.addEventListener('DOMContentLoaded', () => {
+            voiceDiary = new VoiceDiary();
+        });
+    </script>
+</body>
+</html>
